@@ -1,0 +1,783 @@
+function Simulation(listDailyData, total_days, start_simulations, n_simulations, givenSource, n_sources, progress, version)
+    rng('shuffle'); %ensures that all of the numbers generated are truly random 
+    
+    starttime = cputime; 
+    
+    global listDailyData; 
+    global progress;
+
+%     %variables to set for different trials: 
+%     listDailyData = 0; %0 if we don't list individual simulations ; 1 if list each simulation
+%     total_days = 100; %sets how many days to run for the simulation
+%     start_simulations = 1; %sets what number simulation to start at (1 unless finishing up another simulation) 
+%     n_simulations = 5; %how many times to run the simulation 
+%     givenSource = 0; %0 if random source from data; 1 if given a list of sources; 2 if from workplace_id 307996 
+%     n_sources = 1; %how many randomly selected sources to start with (only when givenSource = 0)
+%     progress = 0; %1 if a randomly selected new person gets infected each day (only when givenSource = 0, n_sourcs = 1); 0 otherwise
+%     %also change line 66 to correct file name if givenSource == 1 
+
+    listDailyData = str2num(listDailyData);
+    total_days = str2num(total_days);
+    start_simulations = str2num(start_simulations);
+    n_simulations = str2num(n_simulations);
+    
+    givenSource = str2num(givenSource);
+    n_sources = str2num(n_sources);
+    progress = str2num(progress);
+    version = str2num(version);
+
+    sourceVector = zeros(n_simulations,n_sources); %vector of the sources of each simulation
+    outbreakVector = zeros(n_simulations, 1); %the number of days of the outbreak for each simulation
+    outbreakVector = outbreakVector + total_days+1; %those simulations that do no finish by the limit get set to this number 
+    affectedVector = zeros(n_simulations, 1); %vector that stores how many people are eventually affected by the disease 
+    homeTransmissionVector = zeros(n_simulations, 1); %number of people who were infected at home
+    workTransmissionVector = zeros(n_simulations, 1); %number of people who were infected at work
+    serviceTransmissionVector = zeros(n_simulations, 1); %number of people who were infected at service locations 
+    
+    global homeTransmission; %number of transmission made at home
+    global workTransmission;
+    global serviceTransmission; 
+    global familyHead; %index of the first person in each family
+    global familyMemCount; %number of people in each family 
+    global day_workM; %matrix of daytime work connections
+    global past_workM; %matrix of pastime work connections 
+    global status; %vector with status of illness 
+    global age; %vector of ages 
+    global work; %vector of all workplaces 
+    global worktime; 
+    if listDailyData == 1 || progress == 1
+        global sickCh; %number of children who are sick in a day 
+        global sickAd; %number of adults who are sick in a day
+        global sickSen; %number of seniors who are sick in a day 
+    end
+    global atHomeDaytime; 
+    global atHomePastime; 
+    global servicePlaceM_one;
+    global servicePlaceM_two;
+    global servicePlaceM_three;
+    global servicePlaceM_four; 
+    global serviceEmployeeM; 
+
+    %%
+    %The following code gets the information about the family matrix
+    dataFamily = csvread('familyMatrix.csv'); %gets the matrix data from the simplified connections file     
+    numberOfFamilies = length(dataFamily)-1; %how many non-singleton families there are
+    familyHead = dataFamily(1:numberOfFamilies, 1); %data(:,1) is the first person in that family
+    familyMemCount = dataFamily(1:numberOfFamilies, 2); %data(:,2) is the number of people in that person's family
+    members = dataFamily(length(dataFamily),1); %gets the number of unique persons there are in all this data
+    %fprintf(' family matrix data read %.2fs \n', cputime-starttime); 
+      
+    %%
+    %The following code gets the daytime work adjacency matrix 
+    dataDaytimeWork = csvread('workDaytimeMatrix.csv'); %gets the matrix data from the work connections file
+    x = dataDaytimeWork(:, 1); %x coord of matrix 
+    y = dataDaytimeWork(:, 2); %y coord of matrix 
+    day_workM = sparse(x, y, 2, members, members); %creates the work matrix 
+    %fprintf(' work matrix data read %.2fs \n', cputime-starttime); 
+
+    %%
+    %The following code gets the pastime work adjacency matrix 
+    dataPastimeWork = csvread('workPastimeMatrix.csv'); %gets the matrix data from the work connections file
+    clearvars x y; 
+    x = dataPastimeWork(:, 1); %x coord of matrix 
+    y = dataPastimeWork(:, 2); %y coord of matrix 
+    past_workM = sparse(x, y, 2, members, members); %creates the work matrix 
+    %fprintf(' work matrix data read %.2fs \n', cputime-starttime); 
+    
+    %%
+    %The following code gets the daytime at home people 
+    atHomeDaytime = csvread('atHomeDaytime.csv'); 
+    hold_atHomeDaytime = atHomeDaytime; 
+    
+    %%
+    %The following code gets the pastime at home people 
+    atHomePastime = csvread('atHomePastime.csv'); 
+    hold_atHomePastime = atHomePastime; 
+    
+    %%
+    %Gets the service matrices
+    servicePlace_one = csvread('ServiceMatrix1.csv'); %gets the info from the service files
+    a = servicePlace_one(:, 1); 
+    b = servicePlace_one(:, 2); 
+    c = servicePlace_one(:, 3); 
+    servicePlaceM_one = sparse(a, b, c, members, 56); 
+    servicePlaceM_one = full(servicePlaceM_one); 
+    
+    
+    serviceEmployee_weekend = csvread('ServiceWeekendEmployees.csv'); 
+    a = serviceEmployee_weekend(:, 1); 
+    b = serviceEmployee_weekend(:, 2); 
+    c = serviceEmployee_weekend(:, 3); 
+    serviceEmployeeM = sparse(a, b, c, members, 56); 
+    serviceEmployeeM = full(serviceEmployeeM); 
+    
+    atService = find(servicePlaceM_one ~= 0); 
+    serviceEmployeeM(atService) = 0; %sets all the weekend employees to not work if they a customer instead 
+    
+    %%
+    %The following code gets all the stored info  
+    fid = fopen('infoWithWorkTime.csv','r');
+    info = textscan(fid, '%f %f %s %f %f %f %s', 'Delimiter',',','HeaderLines', 0); %gets the information of the individuals stored in the info file
+    fclose(fid); 
+    %fprintf(' info with work data read %.2fs \n', cputime-starttime); 
+    
+    % tract = info{1};
+    % blockgroup = info{2};
+    % id = info{3};
+    % family = info{4};
+    age = info{5};
+    work = info{6};
+    worktime = info{7};
+    % index(1:members,1) = 1:members; %Sets up indices for every person
+    
+    for sim=start_simulations:n_simulations %runs through n_simulations
+        fprintf(' Simulation %i starts: %.2fs \n', sim, cputime-starttime);
+        homeTransmission = 0;
+        workTransmission = 0;
+        serviceTransmission = 0; 
+        
+        if listDailyData == 1 || progress == 1
+            sickChVector = zeros(total_days, 1); %number of new sick children each day 
+            sickAdVector = zeros(total_days, 1); %number of new sick adults each day
+            sickSenVector = zeros(total_days, 1); %number of new sick seniors each day
+            if listDailyData == 1
+                t_sickChVector = zeros(total_days, 1); %number of total sick children each day 
+                t_sickAdVector = zeros(total_days, 1); %number of total sick adults each day
+                t_sickSenVector = zeros(total_days, 1); %number of total sick seniors each day                  
+            end
+        end
+        status = zeros(members, 1); %everyone is stored in a vector status and starts out susceptible (status of 0)
+        source = zeros(n_sources, 1); 
+        if (givenSource == 0) %no predetermined sources 
+            for sourceNumber = 1:n_sources
+                source(sourceNumber) = randi(members); %randomly selects a person to infect with the disease
+                sameSource = find(source == source(sourceNumber)); %if the source is already there
+                while (work(source(sourceNumber)) == -999 || length(sameSource) > 1) %if the source is umemployed or is already a source
+                    source(sourceNumber) = randi(members); 
+                    sameSource = find(source == source(sourceNumber)); 
+                end
+            end
+        elseif (givenSource == 1) %if there are a predetermined list of sources
+            source = source_previous_trial(sim); 
+        elseif (givenSource == 2) %if the source is from workplace_id 307996
+            clearvars sourceWorkplace; 
+            sourceWorkplace = find(work == 307996); %list of indices that work in 307996
+            randomWorker = randi(length(sourceWorkplace)); %select a random worker from 307996
+            source = sourceWorkplace(randomWorker); 
+        end
+        
+        status(source) = 2; %They get switched to a status of 2 (latent day 2) right before day 3 starts
+        clearvars adultSources seniorSources childSources; 
+        adultSources = find(age(source) == 2); %adults sources from the first day
+        seniorSources = find(age(source) == 3); 
+        childSources = find(age(source) == 4); 
+        
+        if listDailyData == 1 || progress == 1
+            sickAdVector(1) = length(adultSources); 
+            sickSenVector(1) = length(seniorSources);
+            sickChVector(1) = length(childSources);
+            if listDailyData == 1
+                t_sickAdVector(1:2,1) = length(adultSources);
+                  t_sickSenVector(1:2,1) = length(seniorSources);
+                t_sickChVector(1:2,1) = length(childSources);
+            end
+        end
+        
+        sourceVector(sim, 1:n_sources) = source'; %keeps track of who the source was for each simulation   
+        
+        if (progress == 1) %if there is a new person infected each day
+            allSusc = zeros(members-1, 1); 
+            allSusc = find(status == 0); %all susc people at the beginning of day 2
+            p = randi(members-1); 
+            while work(allSusc(p)) == -999
+                p = randi(members-1); %new random person who gets infected has to be someone in the workplace 
+            end
+            status(allSusc(p)) = 1;  %day 2 of simulation: another person gets infected
+            dailySource = zeros(total_days, 1); %variable to store who the new source is each day
+            dailySource(1) = source(1); 
+            dailySource(2) = allSusc(p); 
+            if age(allSusc(p)) == 2 %keeps track of how many new cases there were on day 2
+                sickAdVector(2) = 1; 
+                if listDailyData == 1
+                    t_sickAdVector(2) = t_sickAdVector(1) + 1;
+                end
+            elseif age(allSusc(p)) == 3
+                sickSenVector(2) = 1;
+                if listDailyData == 1
+                    t_sickSenVector(2) = t_sickSenVector(1) + 1;
+                end
+            else
+                sickChVector(2) = 1; 
+                if listDailyData == 1
+                    t_sickChVector(2) = t_sickChVector(1) + 1;
+                end
+            end
+        end
+        
+        for day = 3:total_days+1 %Day 3-201: disease spreads; move sick people to their new columns first
+            clearvars s atHomeDaytime atHomePastime; 
+            s = find(status == 7 | status == 10 | status == 13 | status == 19); %last day of infection -> recovered 
+            status(s) = -1; 
+            
+            for currentStatus = [18:-1:14, 12, 11, 9, 8, 6, 5] %children, senior, adult -> next day of children, seniors, adult
+                clearvars s; 
+                s = find(status == currentStatus); 
+                status(s) = currentStatus + 1; 
+            end   
+        
+            clearvars s a ran w nw; %clear varaibles to use for placing people on different tracks
+            s = find(status == 4); %status 4 splits into different tracks depending on the age of the individuals   
+            a = age(s); %age of everyone who has a status of 4 
+            seniors = find(a == 3);
+            status(s(seniors)) = 11; %everyone who is a senior gets moved to a status of 11    
+            children = find(a == 4);
+            status(s(children)) = 14; %everyone who is a child gets moved to a status of 14
+            adults = find(a == 2);
+            if length(adults) > 0
+                ran = rand(length(adults),1); %for each adult, assign him a random number between 0 and 1
+                w = find(ran <= .326); %withdrawn case with a 32.6% chance
+                status(s(adults(w))) = 8; %those who are withdrawn get placed on the 8 track
+                nw = find(ran > .326); %not withdrawn
+                status(s(adults(nw))) = 5; %those who are not withdrawn get placed on the 5 track
+            end
+            for currentStatus = [3:-1:1] %everyone -> next day for everyone
+                clearvars s; 
+                s = find(status == currentStatus); 
+                status(s) = currentStatus + 1; 
+            end
+
+            if progress == 1 %stops the simulation if the only people who are sick are those who are randomly selected each new day
+                if day == 8 %check for the first 7 days: if the initial source was not a child and the only people who are getting infected are new random cases
+                    if sickChVector(1)==0  
+                        if sickAdVector(1:day-1)+sickSenVector(1:day-1)+sickChVector(1:day-1)==1
+                            outbreakVector(sim) = day - 1;
+                            break; 
+                        end
+                    end       
+                %don't need to check for day 9
+                elseif day > 9
+                    if sickAdVector(day-9:day-1)+sickSenVector(day-9:day-1)+sickChVector(day-9:day-1)==1
+                        outbreakVector(sim) = day - 1;
+                        break; 
+                    elseif sickAdVector(day-6:day-1)+sickSenVector(day-6:day-1)+sickChVector(day-6:day-1)==1
+                        if age(dailySource(day-7)) == 4
+                            daySeven = 1; 
+                        else 
+                            daySeven = 0; 
+                        end
+                        if age(dailySource(day-8)) == 4
+                            dayEight = 1; 
+                        else
+                            dayEight = 0; 
+                        end
+                        if age(dailySource(day-9)) == 4
+                            dayNine = 1; 
+                        else
+                            dayNine = 0;  
+                        end
+                        if sickChVector(day-7)-daySeven==0 && sickChVector(day-8)-dayEight==0 && sickChVector(day-9)-dayNine==0
+                            outbreakVector(sim) = day - 1;
+                            break; 
+                        end
+                    end            
+                end    
+            end
+            
+            if length(find(status == 0))+length(find(status == -1)) == members
+                outbreakVector(sim) = day - 1;
+                break; %if there are no more infectious people left, the disease is over and the loop stops  
+            end     
+            if day == total_days+1 %simulation is over after day 200. day 201 was just used to account for final statuses 
+                break;
+            end
+          
+            withdrawn = find(status >= 8 & status <= 19); %everyone who withdraws to their homes when they are sick    
+            
+            %daytime at home
+            clearvars at_service_customer at_service_employee; 
+            if mod(day, 7) == 0 || mod(day, 7) == 6 %weekend case
+                atHomeDaytime = 1:members; 
+                atHomeDaytime = atHomeDaytime'; 
+            else %weekday case
+                atHomeDaytime = hold_atHomeDaytime; 
+            end
+            at_service_customer = find(servicePlaceM_one(:,mod(day*2-1, 56)) ~= 0); %index of everyone who is a customer at a service place 
+            at_service_employee = find(serviceEmployeeM(:,mod(day*2-1, 56)) ~= 0);  %index of everyone who is an employee at a service place (will only be weekends)
+            atHomeDaytime = setdiff(atHomeDaytime, at_service_customer); %remove all people who are customers at a service place 
+            if length(at_service_employee) > 0 %if it is a weekend and there are service employees 
+                atHomeDaytime = setdiff(atHomeDaytime, at_service_employee); %remove all people who are employees at a service place 
+            end
+            clearvars temp_atHomeDaytime; 
+            temp_atHomeDaytime = union(atHomeDaytime, withdrawn); %add those people who are withdrawn 
+            atHomeDaytime = temp_atHomeDaytime; %set to original list of people who are at home during the daytime
+            
+            %pastime at home 
+            clearvars at_service_customer at_service_employee; 
+            if mod(day, 7) == 0 || mod(day, 7) == 6 %weekend case
+                atHomePastime = 1:members; 
+                atHomePastime = atHomePastime';
+            else %weekday case
+                atHomePastime = hold_atHomePastime; 
+            end
+            per = mod(day*2, 56); 
+	    if per == 0
+		per = 56; 
+	    end
+	    at_service_customer = find(servicePlaceM_one(:,per) ~= 0); %index of everyone who is a customer at a service place 
+            at_service_employee = find(serviceEmployeeM(:,per) ~= 0);  %index of everyone who is an employee at a service place (will only be weekends)
+            atHomePastime = setdiff(atHomePastime, at_service_customer); %remove all people who are customers at a service place 
+            if length(at_service_employee) > 0 %if it is a weekend and there are service employees 
+                atHomePastime = setdiff(atHomePastime, at_service_employee); %remove all people who are employees at a service place 
+            end
+            clearvars temp_atHomePastime; 
+            temp_atHomePastime = union(atHomePastime, withdrawn); %add those people who are withdrawn 
+            atHomePastime = temp_atHomePastime; %set to original list of people who are at home during the pastime
+            
+            
+            if mod(day, 7) == 0 || mod(day,7) == 6 %weekend case
+                %DAYTIME OUT WEEKEND
+                clearvars allInf;            
+                allInf = find(status >= 3 & status <= 7); %all infectious people who are not withdrawn
+                spread_disease(allInf, 3, mod(day*2-1, 56), day); %spread disease at service place  
+                if listDailyData == 1 || progress == 1
+                    sickAdVector(day) = sickAdVector(day) + sickAd; 
+                    sickSenVector(day) = sickSenVector(day) + sickSen; 
+                    sickChVector(day) = sickChVector(day) + sickCh;     
+                end                 
+                
+                %DAYTIME IN AT HOME WEEKEND 
+                clearvars allInf;            
+                allInf = find(status >= 3 & status <= 19); %all infectious people  
+                spread_disease(allInf, 2, mod(day*2-1, 56), day);  %type 1 is home, 2 is work
+                if listDailyData == 1 || progress == 1
+                    sickAdVector(day) = sickAdVector(day) + sickAd; 
+                    sickSenVector(day) = sickSenVector(day) + sickSen; 
+                    sickChVector(day) = sickChVector(day) + sickCh;     
+                end           
+                
+                %PASTIME OUT WEEKEND
+                clearvars allInf;            
+                allInf = find(status >= 3 & status <= 7); %all infectious people who are not withdrawn
+                spread_disease(allInf, 3, mod(day*2, 56), day); %spread disease at service place  
+                if listDailyData == 1 || progress == 1
+                    sickAdVector(day) = sickAdVector(day) + sickAd; 
+                    sickSenVector(day) = sickSenVector(day) + sickSen; 
+                    sickChVector(day) = sickChVector(day) + sickCh;     
+                end
+                
+                %PASTIME AT HOME WEEKEND 
+                clearvars allInf;            
+                allInf = find(status >= 3 & status <= 19); %all infectious people  
+                spread_disease(allInf, 2, mod(day*2, 56), day);  %calls the spread_disease function which spreads the disease to 10 randomly selected family members. 1 is home, 2 is work 
+                if listDailyData == 1 || progress == 1
+                    sickAdVector(day) = sickAdVector(day) + sickAd; 
+                    sickSenVector(day) = sickSenVector(day) + sickSen; 
+                    sickChVector(day) = sickChVector(day) + sickCh;     
+                end
+                
+            else %weekday case         
+                %DAYTIME OUT: gets people who are infectious and are not withdrawn and places their indices in the allInf vector
+                clearvars allInf; 
+                allInf = find(status >= 3 & status <= 7); %all infectious people who are not withdrawn 
+                spread_disease(allInf, 3, mod(day*2-1, 56), day); %calls the spread_disease function which spreads the disease to 10 randomly selected coworkers. 1 is home, 2 is daytime work, 3 is pastime work, 4 is daytime at home, 5 is pastime at home 
+                if listDailyData == 1 || progress == 1
+                    sickAdVector(day) = sickAdVector(day) + sickAd; 
+                    sickSenVector(day) = sickSenVector(day) + sickSen; 
+                    sickChVector(day) = sickChVector(day) + sickCh;
+                end
+                
+                %DAYTIME IN: people who do not work during the daytime spread infections to others who are at home
+                clearvars allInf;            
+                allInf = find(status >= 3 & status <= 19); %all infectious people  
+                spread_disease(allInf, 2, mod(day*2-1, 56), day);  %calls the spread_disease function which spreads the disease to 10 randomly selected family members. 1 is home, 2 is work 
+                if listDailyData == 1 || progress == 1
+                    sickAdVector(day) = sickAdVector(day) + sickAd; 
+                    sickSenVector(day) = sickSenVector(day) + sickSen; 
+                    sickChVector(day) = sickChVector(day) + sickCh;     
+                end                   
+                
+                %PASTIME OUT
+                clearvars allInf; 
+                allInf = find(status >= 3 & status <= 7); %all infectious people who go to work
+                spread_disease(allInf, 3, mod(day*2, 56), day); %calls the spread_disease function which spreads the disease to 10 randomly selected coworkers. 1 is home, 2 is daytime work, 3 is pastime work 
+                if listDailyData == 1 || progress == 1
+                    sickAdVector(day) = sickAdVector(day) + sickAd; 
+                    sickSenVector(day) = sickSenVector(day) + sickSen; 
+                    sickChVector(day) = sickChVector(day) + sickCh;
+                end 
+                
+                %PASTIME IN AT HOME: people who do not work during the pastime spread infections to others who are at home
+                clearvars allInf;            
+                allInf = find(status >= 3 & status <= 19); %all infectious people  
+                spread_disease(allInf, 2, mod(day*2, 56), day);  %calls the spread_disease function which spreads the disease to 10 randomly selected family members. 1 is home, 2 is work 
+                if listDailyData == 1 || progress == 1
+                    sickAdVector(day) = sickAdVector(day) + sickAd; 
+                    sickSenVector(day) = sickSenVector(day) + sickSen; 
+                    sickChVector(day) = sickChVector(day) + sickCh;     
+                end                   
+            end     
+            
+            %WEEKDAY OR WEEKEND NIGHTTIME: gets the people who are infectious and places their indices in the allInf vector
+            clearvars allInf;            
+            allInf = find(status >= 3 & status <= 19); %all infectious people  
+            spread_disease(allInf, 1, 0, day);  %calls the spread_disease function which spreads the disease to 10 randomly selected family members. 1 is home, 2 is work 
+            if listDailyData == 1 || progress == 1
+                sickAdVector(day) = sickAdVector(day) + sickAd; 
+                sickSenVector(day) = sickSenVector(day) + sickSen; 
+                sickChVector(day) = sickChVector(day) + sickCh;     
+            end 
+              
+            %if a new person gets randomly infected each day
+            if (progress == 1)
+                clearvars allSusc p; 
+                allSusc = find(status == 0); 
+                p = randi(length(allSusc)); 
+                while work(allSusc(p)) == -999
+                    p = randi(length(allSusc)); %new random person who gets infected has to be someone in the workplace 
+                end                    
+                status(allSusc(p)) = 1; %a new person gets placed in the "latent day 1" status
+                dailySource(day) = allSusc(p); %records who the new source is in the dailySource vector
+                if age(allSusc(p)) == 2 %adds 1 to the number of new sick ad, sen, or ch
+                    sickAdVector(day) = sickAdVector(day) + 1; 
+                elseif age(allSusc(p)) == 3
+                    sickSenVector(day) = sickSenVector(day) + 1; 
+                else
+                    sickChVector(day) = sickChVector(day) + 1; 
+                end
+            end
+            
+            if listDailyData == 1
+                if day > 7
+                    t_sickAdVector(day) = t_sickAdVector(day-1) + sickAdVector(day) - sickAdVector(day-7); 
+                    t_sickSenVector(day) = t_sickSenVector(day-1) + sickSenVector(day) - sickSenVector(day-7);
+                else
+                    t_sickAdVector(day) = t_sickAdVector(day-1) + sickAdVector(day); 
+                    t_sickSenVector(day) = t_sickSenVector(day-1) + sickSenVector(day);
+                end
+                if day > 10
+                    t_sickChVector(day) = t_sickChVector(day-1) + sickChVector(day) - sickChVector(day-10);
+                else
+                    t_sickChVector(day) = t_sickChVector(day-1) + sickChVector(day);
+                end
+            end
+            %fprintf(' Day %d finished: %.2fs \n', day, cputime-starttime);
+        end
+        
+        unaffected = find(status == 0); 
+        n_unaffected = length(unaffected); 
+        affectedVector(sim) = members - n_unaffected; 
+        homeTransmissionVector(sim) = homeTransmission;
+        workTransmissionVector(sim) = workTransmission;
+        serviceTransmissionVector(sim) = serviceTransmission; 
+        
+        if listDailyData == 1
+            sickVector = sickAdVector + sickSenVector + sickChVector;
+            t_sickVector = t_sickAdVector + t_sickSenVector + t_sickChVector; 
+            sickInfo = [sickAdVector, sickSenVector, sickChVector, sickVector, t_sickAdVector, t_sickSenVector, t_sickChVector, t_sickVector]; %matrix with the number of new cases each day & the total number of sick people each day
+            sickInfo = sickInfo(1:day-1, :); %simplify the matrix to only encompass the number of days the outbreak takes place if it is less than the set date
+        
+            vectorStorage = sprintf('sim_GivenSource=%i_nSources=%i_Progress=%i_Version=%i_Simulation=%i.csv', givenSource, n_sources, progress, version,  sim); %number each simulation file
+            dlmwrite(vectorStorage, sickInfo, 'delimiter', ',', 'precision', '%i'); %stores all of the new cases data into a csv file  
+        end
+        
+%         if mod(sim, 10) == 0 && sim ~= n_simulations 
+%             simSummary = [sourceVector, outbreakVector, affectedVector]; %a matrix with the source and number of days of outbreak for each simulation
+%             summaryName = sprintf('simSum%i.csv',sim); 
+%             dlmwrite(summaryName, simSummary, 'delimiter', ',', 'precision', '%f'); %saves data in csv file 
+%         end
+    end 
+    simSummary = [sourceVector, outbreakVector, affectedVector, homeTransmissionVector, workTransmissionVector, serviceTransmissionVector]; %a matrix with the source and number of days of outbreak for each simulation
+    fileName = sprintf('Summary_simulation_GivenSource=%i_nSources=%i_Progress=%i_Version%i.csv', givenSource, n_sources, progress, version); 
+    dlmwrite(fileName, simSummary, 'delimiter', ',', 'precision', '%i'); %saves data in csv file 
+end
+
+function spread_disease(infectedVector, type, period, day_epidemic)
+    global homeTransmission;
+    global workTransmission;
+    global serviceTransmission; 
+    global familyHead;
+    global familyMemCount; 
+    global day_workM; 
+    global past_workM; 
+    global status;
+    global age; 
+    global work; 
+    global worktime; 
+    global listDailyData; 
+    global progress;
+    
+    if listDailyData == 1 || progress == 1
+        global sickAd;
+        global sickSen;
+        global sickCh;
+    end
+    
+    global atHomeDaytime; 
+    global atHomePastime; 
+    global servicePlaceM_one;
+    global servicePlaceM_two;
+    global servicePlaceM_three;
+    global servicePlaceM_four; 
+    global serviceEmployeeM; 
+
+    if type ~= 1 && period == 0
+	    period = 56;
+    end
+
+    sickAd = 0; %global variables if needed; otherwise local variable used for percentage of transmissions at home/work/service
+    sickSen = 0; 
+    sickCh = 0;
+    
+    clearvars tempVector; 
+    
+    if type == 2 %in at home 
+        if mod(period, 2) == 1 %daytime 
+            tempVector = intersect(infectedVector, atHomeDaytime); 
+            clearvars infectedVector; 
+            infectedVector = tempVector; 
+        else %pastime
+            tempVector = intersect(infectedVector, atHomePastime);
+            clearvars infectedVector;
+            infectedVector = tempVector; 
+        end
+    elseif type == 3 %out 
+        if mod(period, 2) == 1 %daytime
+            tempVector = setdiff(infectedVector, atHomeDaytime); 
+            clearvars infectedVector; 
+            infectedVector = tempVector; 
+        else %pastime
+            tempVector = setdiff(infectedVector, atHomePastime); 
+            clearvars infectedVector; 
+            infectedVector = tempVector;             
+        end
+    end      
+   
+    for infected = 1:length(infectedVector) 
+%	fprintf('Spreading infection for %i, type = %i, period = %i \n', infectedVector(infected), type, period); 
+        clearvars infPerson a b c fH firstP n_P lastP contacts isCustomer areCustomers n_contacts susc tempList r agegroup ad sen ch randA randS randC infA infS infC muliplier multA multS multC customers; %clears all the variables for each infected person
+        isCustomer = 0; 
+        areCustomers = zeros(10, 1); 
+        infPerson = infectedVector(infected); %index of the infected person  
+          
+        if type == 1 || type == 2 %home case 
+            fH = find(familyHead <=  infPerson, 1, 'last');
+            firstP = familyHead(fH); 
+            n_P = familyMemCount(fH);
+            lastP = firstP + n_P - 1;
+            if infPerson <= lastP
+                contacts(1:infPerson-firstP) = firstP:(infPerson-1);
+                contacts(infPerson-firstP+1:n_P-1) = (infPerson+1):lastP;
+                contacts = contacts';
+            else
+                contacts = []; 
+            end
+            
+            if type == 2 %home case when there are people out
+                temp_contacts = contacts; 
+                clearvars contacts; 
+                if mod(period, 2) == 1 %daytime
+                    contacts = intersect(temp_contacts, atHomeDaytime);
+                else %pastime
+                    contacts = intersect(temp_contacts, atHomePastime); 
+                end                    
+            end
+            
+            areCustomers = zeros(length(contacts), 1); 
+        else %out case
+            if mod(day_epidemic, 7) == 0 || mod(day_epidemic,7) == 6 %weekend case
+                location = servicePlaceM_one(infPerson, period); 
+                isCustomer = 1; %assume the person is a customer
+                if location == 0 %if the person is an employee
+                    isCustomer = 0; %the person must be an employee then; not a customer 
+                    location = serviceEmployeeM(infPerson, period);                  
+                end
+                other_customers_one = find(servicePlaceM_one(:, period) == location); %all others at the same location
+                other_employees = find(serviceEmployeeM(:, period) == location); 
+                n_cust = length(other_customers_one); 
+                n_emp = length(other_employees); 
+                if isCustomer == 0 %if is employee 
+                    self = find(other_employees == infPerson); 
+                    other_employees(self) = other_employees(n_emp);
+                    n_emp = n_emp - 1; 
+                    other_employees = other_employees(1:n_emp);  %gets the list of other employees at the same location
+                else %is a customer 
+                    self = find(other_customers_one == infPerson); 
+                    other_customers_one(self) = other_customers_one(n_cust); 
+                    n_cust = n_cust -1; 
+                    other_customers_one = other_customers_one(1:n_cust); %gets the list of other customers at the same location
+                end   
+                if mod(period, 2) == 1 %daytime
+                    other_employees = setdiff(other_employees, atHomeDaytime); %remove people who are supposed to be at home (withdrawn people)
+                    other_customers_one = setdiff(other_customers_one, atHomeDaytime); 
+                else %pastime 
+                    other_employees = setdiff(other_employees, atHomePastime); 
+                    other_customers_one = setdiff(other_customers_one, atHomePastime); 
+                end
+                n_emp = length(other_employees); 
+                n_cust = length(other_customers_one); 
+                
+                contacts = zeros(n_cust + n_emp, 1); 
+                contacts(1:n_emp) = other_employees; 
+                contacts(n_emp+1:n_emp+n_cust) = other_customers_one; %contacts are all other weekend employees and customers  
+                areCustomers = zeros(n_cust + n_emp, 1); 
+                areCustomers(n_emp+1:n_emp+n_cust) = 1; %customers are all set to = 1 
+            else %weekday case
+                if servicePlaceM_one(infPerson, period) == 0%if the person is out at work
+                    if mod(period, 2) == 1 %daytime
+                        [a,b,c] = find(day_workM(infPerson,:));
+                        contacts = b';
+                        contacts = setdiff(contacts, atHomeDaytime); %get rid of everyone who is at home 
+                        if strcmp(worktime(infPerson), 'Pastime') == 0
+                            work_location = work(infPerson); %record work location to check if there are any customers there     
+                        end
+                    else %pastime
+                        [a,b,c] = find(past_workM(infPerson,:));
+                        contacts = b';    
+                        contacts = setdiff(contacts, atHomePastime); 
+                        if strcmp(worktime(infPerson), 'Pastime') == 1
+                            work_location = work(infPerson);     
+                        end
+                    end             
+		            if work_location ~= -999 % if the work location is not at home 
+                        serviceCust = find(servicePlaceM_one(:, period) == work_location);
+                        if mod(period, 2) == 1 %daytime
+                            serviceCust = setdiff(serviceCust, atHomeDaytime); 
+                        else %pastime
+                            serviceCust = setdiff(serviceCust, atHomePastime); 
+                        end
+                    else
+			            serviceCust = 0; 
+                    end
+                    if length(serviceCust) > 0 %if there are also customers at workplace 
+                        n_serviceCust = length(serviceCust); 
+                        n_contacts = length(contacts); 
+                        contacts(n_contacts+1:n_contacts+n_serviceCust) = serviceCust;
+                        areCustomers = zeros(n_contacts+n_serviceCust, 1); 
+                        areCustomers(n_contacts+1:n_contacts+n_serviceCust) = 1; %customers have type 1
+                    else
+                        areCustomers = zeros(length(contacts), 1); 
+                    end
+                else %if the person is out shopping
+                    isCustomer = 1; 
+                    service_location = servicePlaceM_one(infPerson, period); 
+                    other_customers_one = find(servicePlaceM_one(:, period) == service_location); %all the customers at this service location 
+                    self = find(other_customers_one == infPerson); 
+                    n_cust = length(other_customers_one); 
+                    other_customers_one(self) = other_customers_one(n_cust); 
+                    n_cust = n_cust -1; 
+                    other_customers_one = other_customers_one(1:n_cust); 
+                    if mod(period, 2) == 1 %daytime
+                        other_customers_one = setdiff(other_customers_one, atHomeDaytime);  
+                    else %pastime
+                        other_customers_one = setdiff(other_customers_one, atHomePastime); 
+                    end
+                    n_cust = length(other_customers_one); 
+                    
+                    %now looking for employees from workplace who also are at this location
+                    at_same = find(work == service_location); 
+                    times = worktime(at_same); 
+                    same_time = strcmp(times, 'Pastime'); 
+                    if mod(period, 2) == 1 %daytime 
+                        same = find(same_time == 0); 
+                        other_employees = at_same(same); 
+                        other_employees = setdiff(other_employees, atHomeDaytime); 
+                    else %pastime
+                        same = find(same_time == 1); 
+                        other_employees = at_same(same); 
+                        other_employees = setdiff(other_employees, atHomePastime); 
+                    end
+                    n_emp = length(other_employees);  
+                   
+                    areCustomers = zeros(n_cust+n_emp, 1); 
+                    contacts(1:n_cust) = other_customers_one; 
+                    areCustomers(1:n_cust) = 1; 
+                    contacts(n_cust+1:n_cust+n_emp) = other_employees; 
+                end
+            end  
+        end
+        
+        
+        
+        n_contacts = length(contacts); 
+        if n_contacts == 0 %if the person does not have any contacts, no need to continue code
+            break;
+        end
+
+        if n_contacts > 10 %randomly select 10 contacts to interact with 
+            tempList = zeros(10,1);
+            r = randperm(n_contacts); 
+            r = r(1:10); 
+            tempList(1:10,1) = contacts(r);
+            tempAreCustomers = areCustomers(r); 
+            clearvars contacts areCustomers; 
+            contacts(1:10, 1) = tempList;    
+            areCustomers = tempAreCustomers; 
+        end
+        %reduce the contacts list to only people who are susceptible
+        clearvars tempList; 
+        susc = find(status(contacts)==0); %only those from the contacts list are susceptible
+        tempList = contacts; %move the contacts list to a temporary list to hold
+        clearvars contacts;
+        contacts(1:length(susc), 1) =  tempList(susc); %add back to the contacts list only those who are susceptible
+        tempAreCustomers = areCustomers(susc); 
+        areCustomers = tempAreCustomers; 
+        %uses probability to determine whether each contact is infected and changes that person to the new status of 1
+        n_contacts = length(contacts);
+        if n_contacts > 0 
+            multiplier = ones(n_contacts, 1);  
+            if isCustomer == 0     
+                multiplyOut = find(areCustomers == 1); 
+		if length(multiplyOut) > 0
+                	multiplier(multiplyOut) = multiplier(multiplyOut) * 10;
+		end 
+            else
+                multiplier = multiplier * 10; 
+            end
+            agegroup = age(contacts); %vector of ages of everyone who is a susceptible contact             
+            sA = 0; 
+	        sS = 0; 
+	        sC = 0; 
+            ad = find(agegroup == 2); %get the indices of all the adults 
+            if length(ad) > 0 
+                randA = rand(length(ad), 1); %generate a vector of random numbers; each number is between 0 and 1          
+                multA = multiplier(ad); %get the multipliers of the adult contacts 
+                randA = randA .* multA; %multiply each element of the random number vector by corresponding multiplier            
+                infA = find(randA <= 0.05); %an adult gets infected with a .05 probability, so these are the infected adults
+                status(contacts(ad(infA))) = 1; %sets the status of the infected individuals to 1 (latent day 1)
+                sA = length(infA); %gets how many newly infected adult cases there are
+                sickAd = sickAd + sA;
+            end
+            
+            sen = find(agegroup == 3); %get the indices of all the seniors 
+            if length(sen) > 0
+                randS = rand(length(sen), 1); %generate a vector of random numbers; each number is between 0 and 1         
+                multS = multiplier(sen); %get the multipliers of the senior contacts 
+                randS = randS .* multS; %multiply each element of the random number vector by corresponding multiplier             
+                infS = find(randS <= 0.05); %a senior gets infected with a .05 probability, so these are the infected seniors
+                status(contacts(sen(infS))) = 1; %sets the status of the infected individuals to 1 (latent day 1)
+                sS = length(infS); %gets how many newly infected senior cases there are
+                sickSen = sickSen + sS;
+            end
+            
+            ch = find(agegroup == 4); %get the indices of all the children 
+            if length(ch) > 0
+                randC = rand(length(ch), 1); %generate a vector of random numbers; each number is between 0 and 1          
+                multC = multiplier(ch); %get the multipliers of the child contacts 
+                randC = randC .* multC; %multiply each element of the random number vector by corresponding multiplier  
+                infC = find(randC <= 0.03); %a child gets infected with a .03 probability, so these are the infected children
+                status(contacts(ch(infC))) = 1; %sets the status of the infected individuals to 1 (latent day 1)
+                sC = length(infC); %gets how many newly infected child cases there are
+                sickCh = sickCh + sC;                   
+            end
+            
+
+   	        if type == 1 || type == 2
+            	homeTransmission = homeTransmission + sA + sS + sC; %if the infection spread at home 
+            elseif isCustomer == 1
+            	serviceTransmission = serviceTransmission + sA + sS + sC; %transmission that spreads from a person who is a customer 
+            else
+            	workTransmission = workTransmission + sA + sS + sC; %transmission that occurs from a person going to his job 
+            end
+    	end        
+   end
+end  
